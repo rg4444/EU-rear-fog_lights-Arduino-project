@@ -6,12 +6,25 @@ const int highBeamPin = 4;
 bool lastButtonState = HIGH;
 bool fogOn = false;
 unsigned long lastDebounceTime = 0;
-const unsigned long debounceDelay = 40; // 40ms is good for most mechanical buttons
+const unsigned long debounceDelay = 40; // Button debounce
+
+// Glitch filter timing (ms)
+const unsigned long glitchTime = 400;  // longer filtering for beam glitches
+const unsigned long gracePeriod = 1000; // ms before forcing OFF
+
+// For glitch filter
+unsigned long lastLowBeamHigh = 0;
+unsigned long lastHighBeamHigh = 0;
+bool filteredLowBeam = false;
+bool filteredHighBeam = false;
+
+// For grace period
+unsigned long beamsOffStart = 0;
 
 void setup() {
   pinMode(buttonPin, INPUT_PULLUP); // Button to GND
   pinMode(relayPin, OUTPUT);
-  pinMode(lowBeamPin, INPUT); // Use voltage divider to 12V signal
+  pinMode(lowBeamPin, INPUT);
   pinMode(highBeamPin, INPUT);
   digitalWrite(relayPin, HIGH);     // Relay OFF at startup
 
@@ -20,10 +33,32 @@ void setup() {
 }
 
 void loop() {
+  // -------- Beam Input Glitch Filter --------
+  bool rawLowBeam = digitalRead(lowBeamPin);
+  bool rawHighBeam = digitalRead(highBeamPin);
+
+  // Low beam filter
+  if (rawLowBeam == HIGH) {
+    lastLowBeamHigh = millis();
+    filteredLowBeam = true;
+  } else if (millis() - lastLowBeamHigh > glitchTime) {
+    filteredLowBeam = false;
+  }
+
+  // High beam filter
+  if (rawHighBeam == HIGH) {
+    lastHighBeamHigh = millis();
+    filteredHighBeam = true;
+  } else if (millis() - lastHighBeamHigh > glitchTime) {
+    filteredHighBeam = false;
+  }
+
+  bool beamsOn = filteredLowBeam || filteredHighBeam;
+
+  // -------- Button Debounce --------
   bool buttonState = digitalRead(buttonPin);
   static bool debouncedButton = HIGH;
 
-  // Debounce logic
   if (buttonState != lastButtonState) {
     lastDebounceTime = millis();
     lastButtonState = buttonState;
@@ -32,10 +67,17 @@ void loop() {
     debouncedButton = buttonState;
   }
 
-  bool lowBeam = digitalRead(lowBeamPin);
-  bool highBeam = digitalRead(highBeamPin);
-
-  bool beamsOn = (lowBeam == HIGH) || (highBeam == HIGH);
+  // -------- Debug Info --------
+  Serial.print("Low beam input: ");
+  Serial.print(rawLowBeam == HIGH ? "HIGH " : "LOW ");
+  Serial.print("Filtered: ");
+  Serial.print(filteredLowBeam ? "ON " : "OFF ");
+  Serial.print("| High beam input: ");
+  Serial.print(rawHighBeam == HIGH ? "HIGH " : "LOW ");
+  Serial.print("Filtered: ");
+  Serial.print(filteredHighBeam ? "ON " : "OFF ");
+  Serial.print("| beamsOn logic: ");
+  Serial.println(beamsOn ? "TRUE (toggle allowed)" : "FALSE (forced OFF)");
 
   // Only toggle ON the transition from not pressed to pressed (debounced)
   static bool lastDebouncedButton = HIGH;
@@ -50,10 +92,15 @@ void loop() {
   }
   lastDebouncedButton = debouncedButton;
 
-  // Force OFF if both beams are OFF
-  if (!beamsOn && fogOn) {
-    fogOn = false;
-    Serial.println("No beam input — fog light forced OFF and reset.");
+  // -------- Grace Period Forced OFF --------
+  if (!beamsOn) {
+    if (beamsOffStart == 0) beamsOffStart = millis();
+    if ((millis() - beamsOffStart > gracePeriod) && fogOn) {
+      fogOn = false;
+      Serial.println("No beam input — fog light forced OFF and reset (after grace period).");
+    }
+  } else {
+    beamsOffStart = 0;
   }
 
   static bool lastRelayState = false;
@@ -65,7 +112,6 @@ void loop() {
 
   digitalWrite(relayPin, fogOn ? LOW : HIGH);
 
-  delay(5); // Fast loop, no missed presses
+  delay(10); // Fast, but gives enough time for debug output
 }
-
 
